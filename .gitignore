@@ -1,0 +1,37 @@
+# User local state & personal data (never commit)
+settings.json
+settings.json.tmp
+operations.log
+*.log
+*.tmp
+*.bak
+backups/
+Mods/*
+!Mods/.gitkeep
+
+# Session notes / local scratch docs
+SESION_RESUMEN.md
+
+# Local builds & packaged release outputs
+_internal/
+OcarinaRemakeManager.exe
+OcarinaRemakeManager-Linux-x64
+releases/
+release_assets/
+dist*/
+build*/
+*.spec
+
+# Python cache & virtual environments
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# OS & editor files
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/

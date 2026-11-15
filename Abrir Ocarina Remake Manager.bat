@@ -1,12 +1,6 @@
 @echo off
 setlocal
 set "APP_DIR=%~dp0"
-set "EXE_PATH=%APP_DIR%OcarinaRemakeManager.exe"
-
-if exist "%EXE_PATH%" (
-    start "" /D "%APP_DIR%" "%EXE_PATH%"
-    exit /b 0
-)
 
 where pyw >nul 2>nul
 if %errorlevel%==0 (
@@ -34,7 +28,7 @@ if %errorlevel%==0 (
     exit /b %errorlevel%
 )
 
-echo No se encontro OcarinaRemakeManager.exe ni Python 3.
-echo Could not find OcarinaRemakeManager.exe or Python 3.
+echo No se encontro Python 3 para ejecutar app.py.
+echo Could not find Python 3 to run app.py.
 pause
 exit /b 1

@@ -436,6 +436,8 @@ class SettingsPage(QtWidgets.QWidget):
     link_changed = QtCore.Signal(bool)
     check_updates_requested = QtCore.Signal()
     auto_update_toggled = QtCore.Signal(bool)
+    browse_launch_exe_requested = QtCore.Signal()
+    reset_launch_exe_requested = QtCore.Signal()
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -479,6 +481,23 @@ class SettingsPage(QtWidgets.QWidget):
         path_row.addWidget(self.browse_btn)
         path_row.addWidget(self.switch_sel_port_btn)
         pl.addLayout(path_row)
+
+        exe_row = QtWidgets.QHBoxLayout()
+        self.launch_exe_lbl = QtWidgets.QLabel("Ejecutable al pulsar Jugar:")
+        self.launch_exe_edit = QtWidgets.QLineEdit()
+        self.launch_exe_edit.setReadOnly(True)
+        self.browse_launch_exe_btn = QtWidgets.QPushButton("Elegir .exe…")
+        self.reset_launch_exe_btn = QtWidgets.QPushButton("Auto")
+        exe_row.addWidget(self.launch_exe_lbl)
+        exe_row.addWidget(self.launch_exe_edit, 1)
+        exe_row.addWidget(self.browse_launch_exe_btn)
+        exe_row.addWidget(self.reset_launch_exe_btn)
+        pl.addLayout(exe_row)
+
+        self.launch_exe_note = QtWidgets.QLabel("")
+        self.launch_exe_note.setObjectName("MutedLabel")
+        self.launch_exe_note.setWordWrap(True)
+        pl.addWidget(self.launch_exe_note)
         root.addWidget(ports_card)
 
         # Account & Profile settings card
@@ -552,6 +571,8 @@ class SettingsPage(QtWidgets.QWidget):
         self.global_link_check.toggled.connect(self.link_changed.emit)
         self.check_updates_btn.clicked.connect(self.check_updates_requested.emit)
         self.auto_update_check.toggled.connect(self.auto_update_toggled.emit)
+        self.browse_launch_exe_btn.clicked.connect(self.browse_launch_exe_requested.emit)
+        self.reset_launch_exe_btn.clicked.connect(self.reset_launch_exe_requested.emit)
 
     def _activate_table_port(self) -> None:
         items = self.ports_table.selectedItems()
@@ -586,6 +607,17 @@ class SettingsPage(QtWidgets.QWidget):
         self.use_path_btn.setText(tx("Usar ruta", "Use path"))
         self.browse_btn.setText(tx("Cambiar carpeta…", "Change folder…"))
         self.switch_sel_port_btn.setText(tx("Usar port seleccionado", "Switch to selected port"))
+        self.launch_exe_lbl.setText(tx("Ejecutable al pulsar Jugar:", "Executable on Play:"))
+        self.browse_launch_exe_btn.setText(tx("Elegir .exe…", "Choose .exe…"))
+        self.reset_launch_exe_btn.setText(tx("Auto", "Auto"))
+        self.launch_exe_note.setText(tx(
+            "Nota: En Longshot se recomienda abrir desde el ejecutable del Launcher "
+            "(ej. LongshotLauncher-v1.0.0-rc.3-windows-x64-setup.exe o LongshotLauncher.exe) para que reconozca "
+            "los saves externos en LongshotLauncher-data\\user\\save. Hookshot y NX2NAVI funcionan con detección automática.",
+            "Note: For Longshot, launching via the Launcher executable "
+            "(e.g. LongshotLauncher-v1.0.0-rc.3-windows-x64-setup.exe or LongshotLauncher.exe) is recommended so external "
+            "saves in LongshotLauncher-data\\user\\save are recognized. Hookshot and NX2NAVI work with auto-detection.",
+        ))
         self.acct_title.setText(tx("CUENTA DE GUARDADO Y PERFIL GLOBAL", "SAVE ACCOUNT & GLOBAL PROFILE"))
         self.acct_lbl.setText(tx("Carpeta de cuenta:", "Account folder:"))
         self.global_link_check.setText(tx(

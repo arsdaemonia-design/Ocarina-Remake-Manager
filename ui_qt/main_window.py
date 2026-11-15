@@ -90,6 +90,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.port = detect_port(configured) if (configured and configured.is_dir()) else None
         if not self.port and self.known_ports:
             self.port = self.known_ports[0]
+        self.port = self._apply_custom_launch_exe(self.port)
         self.game_dir = Path(self.port["root"]) if self.port else (configured if (configured and configured.is_dir()) else self.manager_dir)
 
         self.active_root: Path | None = None
@@ -421,6 +422,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.settings_page.link_changed.connect(self._on_link_mode_changed)
         self.settings_page.check_updates_requested.connect(lambda: self.check_for_updates(silent_if_up_to_date=False))
         self.settings_page.auto_update_toggled.connect(self._on_auto_update_toggled)
+        self.settings_page.browse_launch_exe_requested.connect(self.choose_launch_exe)
+        self.settings_page.reset_launch_exe_requested.connect(self.reset_launch_exe)
 
         self.toggle_log_btn.clicked.connect(self.toggle_log_panel)
         self.clear_log_btn.clicked.connect(self.clear_operation_logs)
@@ -577,7 +580,7 @@ class MainWindow(QtWidgets.QMainWindow):
             return
 
         resolved = path.resolve()
-        self.port = detect_port(resolved)
+        self.port = self._apply_custom_launch_exe(detect_port(resolved))
         self.game_dir = Path(self.port["root"]) if self.port else resolved
         self.settings["game_path"] = str(self.game_dir)
         if self.port:
@@ -612,6 +615,60 @@ class MainWindow(QtWidgets.QMainWindow):
                 f"Switched port to {self.port_label()} (active profile: {active_name})",
             ))
 
+    def _apply_custom_launch_exe(self, port: dict | None) -> dict | None:
+        if not port:
+            return None
+        custom = str(self.settings.get("custom_launch_exes", {}).get(port["id"]) or "").strip()
+        if custom:
+            custom_path = Path(custom)
+            if custom_path.is_file():
+                updated = dict(port)
+                updated["launch_exe"] = custom_path
+                updated["launch_args"] = []
+                return updated
+        return port
+
+    def choose_launch_exe(self) -> None:
+        if self._mod_operation_active or not self.port:
+            return
+        current = Path(self.port.get("launch_exe") or self.game_dir)
+        start_dir = str(current.parent if current.parent.is_dir() else self.game_dir)
+        file_filter = self.tx("Ejecutables (*.exe);;Todos los archivos (*)", "Executables (*.exe);;All files (*)") if os.name == "nt" else self.tx("Todos los archivos (*)", "All files (*)")
+        chosen, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            self.tx(f"Elegir ejecutable / launcher para {self.port['name']}", f"Choose executable / launcher for {self.port['name']}"),
+            start_dir,
+            file_filter,
+        )
+        if not chosen:
+            return
+        chosen_path = Path(chosen).resolve()
+        if not chosen_path.is_file():
+            return
+        self.settings.setdefault("custom_launch_exes", {})[self.port["id"]] = str(chosen_path)
+        self.persist_settings()
+        self.port = self._apply_custom_launch_exe(detect_port(self.port["root"]))
+        self.refresh()
+        self.log_operation(self.tx(
+            f"Ejecutable de {self.port['name']} configurado: {chosen_path}",
+            f"Launch executable for {self.port['name']} set to: {chosen_path}",
+        ))
+
+    def reset_launch_exe(self) -> None:
+        if self._mod_operation_active or not self.port:
+            return
+        custom_map = self.settings.get("custom_launch_exes")
+        if isinstance(custom_map, dict) and self.port["id"] in custom_map:
+            custom_map.pop(self.port["id"], None)
+            self.persist_settings()
+        self.port = detect_port(self.port["root"])
+        self.refresh()
+        if self.port:
+            self.log_operation(self.tx(
+                f"Ejecutable de {self.port['name']} restablecido a automático: {self.port['launch_exe']}",
+                f"Launch executable for {self.port['name']} reset to auto: {self.port['launch_exe']}",
+            ))
+
     def _on_account_changed(self, account_name: str) -> None:
         if not self.port or not account_name or self._mod_operation_active:
             return
@@ -643,6 +700,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self._populate_port_selector()
         self.settings_page.populate_ports(self.known_ports, str(self.port["root"]) if self.port else "")
         self.settings_page.path_edit.setText(str(self.game_dir))
+        self.settings_page.launch_exe_edit.setText(str(self.port.get("launch_exe", "")) if self.port else "")
+        has_custom_exe = bool(self.port and self.settings.get("custom_launch_exes", {}).get(self.port["id"]))
+        self.settings_page.browse_launch_exe_btn.setEnabled(bool(self.port) and not self._mod_operation_active)
+        self.settings_page.reset_launch_exe_btn.setEnabled(has_custom_exe and not self._mod_operation_active)
         self.settings_page.global_link_check.blockSignals(True)
         self.settings_page.global_link_check.setChecked(self.is_mod_profile_linked())
         self.settings_page.global_link_check.blockSignals(False)
@@ -1112,6 +1173,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.settings_page.account_combo,
             self.settings_page.language_combo,
             self.settings_page.check_updates_btn,
+            self.settings_page.browse_launch_exe_btn,
+            self.settings_page.reset_launch_exe_btn,
         ):
             widget.setEnabled(enabled)
         self.saves_page.set_actions_enabled(enabled, busy=not enabled)
@@ -1961,7 +2024,12 @@ class MainWindow(QtWidgets.QMainWindow):
                         "This port uses a Windows binary (.exe) and Wine was not found on Linux.",
                     ))
                 cmd = [wine_bin, *cmd]
-            subprocess.Popen(cmd, cwd=str(self.port["root"]))
+            launch_cwd = (
+                executable.parent
+                if self.port["id"] == "longshot" and executable != Path(self.port.get("game_exe", executable))
+                else self.port["root"]
+            )
+            subprocess.Popen(cmd, cwd=str(launch_cwd))
             report(1.0, self.tx(f"{self.port['name']} iniciado", f"Launched {self.port['name']}"))
             return save_profile if switch_save else ""
 

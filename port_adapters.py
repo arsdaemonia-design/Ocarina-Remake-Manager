@@ -13,7 +13,12 @@ def _is_nx2navi_dir(path):
 
 
 def _is_direct_port_dir(path):
-    return _is_nx2navi_dir(path) or (path / "hookshot.exe").is_file() or (path / "longshot.exe").is_file()
+    return (
+        _is_nx2navi_dir(path)
+        or (path / "hookshot.exe").is_file()
+        or (path / "longshot.exe").is_file()
+        or (path / "bin" / "longshot.exe").is_file()
+    )
 
 
 def _resolve_port_root(root):
@@ -50,7 +55,7 @@ def _resolve_port_root(root):
                 candidates.append(builds_json.parent / "builds" / name_val)
             for candidate in candidates:
                 try:
-                    if candidate.is_dir() and (candidate / "longshot.exe").is_file():
+                    if candidate.is_dir() and ((candidate / "longshot.exe").is_file() or (candidate / "bin" / "longshot.exe").is_file()):
                         return candidate.resolve()
                 except OSError:
                     continue
@@ -60,7 +65,10 @@ def _resolve_port_root(root):
             continue
         try:
             subdirs = sorted(
-                (d for d in builds_dir.iterdir() if d.is_dir() and (d / "longshot.exe").is_file()),
+                (
+                    d for d in builds_dir.iterdir()
+                    if d.is_dir() and ((d / "longshot.exe").is_file() or (d / "bin" / "longshot.exe").is_file())
+                ),
                 key=lambda d: d.stat().st_mtime,
                 reverse=True,
             )
@@ -88,6 +96,57 @@ def _read_version_file(file_path, default="Detected"):
         except OSError:
             pass
     return default
+
+
+def _resolve_longshot_exe(root):
+    at_root = root / "longshot.exe"
+    in_bin = root / "bin" / "longshot.exe"
+    if at_root.is_file() and (root / "longshot_vk.dll").is_file():
+        return at_root
+    if in_bin.is_file():
+        return in_bin
+    return at_root
+
+
+def _resolve_longshot_launcher_exe(selected_root, build_root):
+    """Find LongshotLauncher executable beside LongshotLauncher-data or in LocalAppData."""
+    dirs = [selected_root, selected_root.parent]
+    if build_root.parent.name.casefold() == "builds":
+        launcher_data = build_root.parent.parent
+        dirs.extend([launcher_data, launcher_data.parent])
+
+    local_raw = os.environ.get("LOCALAPPDATA")
+    local_app = Path(local_raw) if local_raw else (Path.home() / "AppData" / "Local")
+    dirs.append(local_app / "Programs" / "LongshotLauncher")
+
+    seen = set()
+    for d in dirs:
+        try:
+            resolved = d.resolve()
+        except OSError:
+            continue
+        if resolved in seen or not resolved.is_dir():
+            continue
+        seen.add(resolved)
+        exact = resolved / "LongshotLauncher.exe"
+        if exact.is_file():
+            return exact
+        try:
+            matches = sorted(
+                (
+                    p for p in resolved.iterdir()
+                    if p.is_file()
+                    and p.suffix.casefold() == ".exe"
+                    and "longshotlauncher" in p.stem.casefold()
+                    and "unins" not in p.stem.casefold()
+                ),
+                key=lambda p: p.name.casefold(),
+            )
+            if matches:
+                return matches[0]
+        except OSError:
+            continue
+    return None
 
 
 def _resolve_longshot_user_dir(selected_root, build_root):
@@ -184,11 +243,18 @@ def detect_port(root):
             "mod_backend": "folder_prefix",
         }
 
-    if (root / "longshot.exe").is_file():
+    longshot_exe = _resolve_longshot_exe(root)
+    if longshot_exe.is_file():
         version = _read_version_file(root / "longshot_version.txt")
         shared_user = _resolve_longshot_user_dir(selected_root, root)
         saves_dir = (shared_user / "save") if shared_user else (root / "user" / "save")
-        launch_args = ["--user", str(shared_user)] if shared_user else []
+        launcher_exe = _resolve_longshot_launcher_exe(selected_root, root)
+        if launcher_exe is not None:
+            launch_exe = launcher_exe
+            launch_args = []
+        else:
+            launch_exe = longshot_exe
+            launch_args = ["--user", str(shared_user)] if shared_user else []
         return {
             "id": "longshot",
             "name": "LONGSHOT",
@@ -197,9 +263,9 @@ def detect_port(root):
             "mods_dir": root / "mods",
             "ini_path": None,
             "saves_dir": saves_dir,
-            "launch_exe": root / "longshot.exe",
+            "launch_exe": launch_exe,
             "launch_args": launch_args,
-            "game_exe": root / "longshot.exe",
+            "game_exe": longshot_exe,
             "mod_backend": "folder_prefix",
         }
 

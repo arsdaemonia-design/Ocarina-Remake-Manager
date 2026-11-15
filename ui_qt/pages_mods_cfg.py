@@ -434,6 +434,8 @@ class SettingsPage(QtWidgets.QWidget):
     account_changed = QtCore.Signal(str)
     language_changed = QtCore.Signal(str)
     link_changed = QtCore.Signal(bool)
+    check_updates_requested = QtCore.Signal()
+    auto_update_toggled = QtCore.Signal(bool)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -522,6 +524,18 @@ class SettingsPage(QtWidgets.QWidget):
         lang_row.addStretch(1)
         ll.addLayout(lang_row)
 
+        update_row = QtWidgets.QHBoxLayout()
+        self.version_lbl = QtWidgets.QLabel("")
+        self.check_updates_btn = QtWidgets.QPushButton("Buscar actualizaciones en GitHub…")
+        update_row.addWidget(self.version_lbl)
+        update_row.addStretch(1)
+        update_row.addWidget(self.check_updates_btn)
+        ll.addLayout(update_row)
+
+        self.auto_update_check = QtWidgets.QCheckBox("Buscar actualizaciones automáticamente al iniciar")
+        self.auto_update_check.setChecked(True)
+        ll.addWidget(self.auto_update_check)
+
         self.paths_info = QtWidgets.QLabel("")
         self.paths_info.setObjectName("MutedLabel")
         self.paths_info.setWordWrap(True)
@@ -536,6 +550,8 @@ class SettingsPage(QtWidgets.QWidget):
         self.account_combo.currentTextChanged.connect(self.account_changed.emit)
         self.language_combo.currentTextChanged.connect(self.language_changed.emit)
         self.global_link_check.toggled.connect(self.link_changed.emit)
+        self.check_updates_btn.clicked.connect(self.check_updates_requested.emit)
+        self.auto_update_check.toggled.connect(self.auto_update_toggled.emit)
 
     def _activate_table_port(self) -> None:
         items = self.ports_table.selectedItems()
@@ -564,7 +580,7 @@ class SettingsPage(QtWidgets.QWidget):
         self.account_combo.setEnabled(bool(accounts))
         self.account_combo.blockSignals(False)
 
-    def retranslate(self, manager_dir: str, log_path: str, tx) -> None:
+    def retranslate(self, manager_dir: str, log_path: str, tx, app_version: str = "") -> None:
         self.ports_title.setText(tx("PORTS DETECTADOS Y CARPETA", "DETECTED PORTS & FOLDER"))
         self.ports_table.setHorizontalHeaderLabels([tx("Port", "Port"), tx("Versión", "Version"), tx("Ruta", "Path")])
         self.use_path_btn.setText(tx("Usar ruta", "Use path"))
@@ -577,4 +593,11 @@ class SettingsPage(QtWidgets.QWidget):
             "Unified mode: switching user updates both saves and mods",
         ))
         self.pref_title.setText(tx("IDIOMA Y UBICACIÓN DEL MANAGER", "LANGUAGE & MANAGER PATHS"))
+        ver_label = f"v{app_version}" if app_version else "—"
+        self.version_lbl.setText(tx(f"Versión instalada: {ver_label}", f"Installed version: {ver_label}"))
+        self.check_updates_btn.setText(tx("Buscar actualizaciones en GitHub…", "Check GitHub for updates…"))
+        self.auto_update_check.setText(tx(
+            "Buscar actualizaciones automáticamente al iniciar",
+            "Automatically check for updates on startup",
+        ))
         self.paths_info.setText(f"Manager: {manager_dir}\nLog: {log_path}")

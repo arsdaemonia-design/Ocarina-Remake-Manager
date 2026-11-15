@@ -28,6 +28,13 @@ from core.mods import (
 )
 from core.ports import discover_known_ports, port_display_label, select_save_account
 from core.process_guard import game_is_running, game_running_message
+from core.updater import (
+    APP_VERSION,
+    GITHUB_RELEASES_URL,
+    check_github_update,
+    download_and_stage_update,
+    launch_staged_update,
+)
 from core.saves import (
     activate_profile_files,
     contains_slot_folders,
@@ -68,6 +75,7 @@ class MainWindow(QtWidgets.QMainWindow):
         except (OSError, ValueError, json.JSONDecodeError):
             self.settings = {}
         self.settings.setdefault("link_mod_profile_to_user", True)
+        self.settings.setdefault("check_updates_on_startup", True)
 
         self.i18n = Translator(language=self.settings.get("language", "es"))
         self.default_game_dir = self.manager_dir
@@ -95,19 +103,23 @@ class MainWindow(QtWidgets.QMainWindow):
         self._current_conflicts: list[dict] = []
         self._mod_operation_active = False
         self._active_worker: OperationWorker | None = None
+        self._update_check_worker: OperationWorker | None = None
         self._log_visible = True
         self.operation_logs: list[str] = []
         self.last_game_check_issue = False
         self.last_port_backup: Path | None = None
         self._nav_buttons: list[tuple[QtWidgets.QPushButton, str, str, str]] = []
 
-        self.setWindowTitle("Ocarina Remake Manager · Hyrule Archive")
+        self.setWindowTitle(f"Ocarina Remake Manager v{APP_VERSION} · Hyrule Archive")
         self.setWindowIcon(make_svg_icon("triforce", COLORS["gold"], 32))
         self.resize(1260, 840)
         self.setMinimumSize(980, 680)
         self.setStyleSheet(build_stylesheet())
 
         self._build_ui()
+        self.settings_page.auto_update_check.blockSignals(True)
+        self.settings_page.auto_update_check.setChecked(bool(self.settings.get("check_updates_on_startup", True)))
+        self.settings_page.auto_update_check.blockSignals(False)
         self._apply_translations()
         self.refresh()
         if self.port:
@@ -122,6 +134,32 @@ class MainWindow(QtWidgets.QMainWindow):
                 "Bienvenido · Elige la carpeta de Hookshot, Longshot o NX2NAVI para comenzar",
                 "Welcome · Select your Hookshot, Longshot, or NX2NAVI folder to begin",
             ))
+
+        QtCore.QTimer.singleShot(150, self._maybe_show_longshot_saves_notice)
+        if self.settings.get("check_updates_on_startup", True):
+            QtCore.QTimer.singleShot(900, lambda: self.check_for_updates(silent_if_up_to_date=True))
+
+    def _maybe_show_longshot_saves_notice(self) -> None:
+        if self.settings.get("longshot_shared_saves_notice_seen"):
+            return
+        self.settings["longshot_shared_saves_notice_seen"] = True
+        self.persist_settings()
+        QtWidgets.QMessageBox.information(
+            self,
+            self.tx("Aviso importante · Carpetas de Longshot", "Important notice · Longshot folders"),
+            self.tx(
+                "Las versiones recientes de Longshot Launcher unificaron los saves en una carpeta compartida.\n\n"
+                "• Puedes seleccionar directamente la carpeta 'LongshotLauncher-data' (o la carpeta del launcher) en lugar de navegar hasta 'builds/<versión>'.\n"
+                "• Los saves se leerán desde 'LongshotLauncher-data\\user\\save' (o '%APPDATA%\\Longshot\\save' si usas el launcher instalado).\n"
+                "• Los mods siguen dentro de la carpeta 'mods' de tu build activa.\n\n"
+                "Al iniciar Longshot desde este gestor se pasará '--user' automáticamente para usar tus saves compartidos.",
+                "Recent Longshot Launcher builds unified saves into a shared folder.\n\n"
+                "• You can now select the 'LongshotLauncher-data' folder (or the launcher folder) directly instead of browsing into 'builds/<version>'.\n"
+                "• Saves are read from 'LongshotLauncher-data\\user\\save' (or '%APPDATA%\\Longshot\\save' for the installed launcher).\n"
+                "• Mods remain inside your active build's 'mods' folder.\n\n"
+                "Launching Longshot from this manager automatically passes '--user' so your shared saves are loaded.",
+            ),
+        )
 
     # --- i18n helpers ---
     def tr(self, text: str) -> str:
@@ -381,6 +419,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.settings_page.account_changed.connect(self._on_account_changed)
         self.settings_page.language_changed.connect(self._on_language_changed)
         self.settings_page.link_changed.connect(self._on_link_mode_changed)
+        self.settings_page.check_updates_requested.connect(lambda: self.check_for_updates(silent_if_up_to_date=False))
+        self.settings_page.auto_update_toggled.connect(self._on_auto_update_toggled)
 
         self.toggle_log_btn.clicked.connect(self.toggle_log_panel)
         self.clear_log_btn.clicked.connect(self.clear_operation_logs)
@@ -429,7 +469,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.saves_page.retranslate(self.tx)
         self.mods_page.retranslate(self.tx)
         self.backups_page.retranslate(self.tx)
-        self.settings_page.retranslate(str(self.manager_dir), str(self.log_file_path), self.tx)
+        self.settings_page.retranslate(str(self.manager_dir), str(self.log_file_path), self.tx, APP_VERSION)
         self.settings_page.language_combo.blockSignals(True)
         self.settings_page.language_combo.setCurrentText("English" if self.i18n.language == "en" else "Español")
         self.settings_page.language_combo.blockSignals(False)
@@ -1071,6 +1111,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.settings_page.switch_sel_port_btn,
             self.settings_page.account_combo,
             self.settings_page.language_combo,
+            self.settings_page.check_updates_btn,
         ):
             widget.setEnabled(enabled)
         self.saves_page.set_actions_enabled(enabled, busy=not enabled)
@@ -1939,4 +1980,178 @@ class MainWindow(QtWidgets.QMainWindow):
             status_text=self.tx("Preparando perfil y abriendo el port…", "Preparing profile and launching port…"),
             on_success=done,
             error_title=self.tx("No se pudo iniciar", "Could not launch"),
+        )
+
+    # --- GitHub Auto-Updater ---
+    def _on_auto_update_toggled(self, checked: bool) -> None:
+        self.settings["check_updates_on_startup"] = bool(checked)
+        self.persist_settings()
+
+    def check_for_updates(self, silent_if_up_to_date: bool = False) -> None:
+        if self._update_check_worker and self._update_check_worker.isRunning():
+            return
+        if not silent_if_up_to_date:
+            self.settings_page.check_updates_btn.setEnabled(False)
+            self.report_progress(None, self.tx(
+                "Buscando actualizaciones en GitHub…",
+                "Checking GitHub for updates…",
+            ))
+
+        worker = OperationWorker(lambda _report: check_github_update(), self)
+        self._update_check_worker = worker
+
+        def on_ok(result: object) -> None:
+            self._update_check_worker = None
+            if not silent_if_up_to_date:
+                self.settings_page.check_updates_btn.setEnabled(not self._mod_operation_active)
+                self.report_progress(1.0, self.tx("Comprobación de versión completa", "Version check complete"))
+
+            info = result if isinstance(result, dict) else {}
+            if info.get("update_available"):
+                latest = str(info.get("latest_version") or "").strip()
+                notes = str(info.get("body") or "").strip()
+                notes_preview = f"\n\n{notes[:500]}" if notes else ""
+                download_url = str(info.get("download_url") or "").strip()
+                html_url = str(info.get("html_url") or GITHUB_RELEASES_URL).strip()
+                self.log_operation(self.tx(
+                    f"Nueva versión disponible en GitHub: {latest} (actual: v{APP_VERSION})",
+                    f"New GitHub version available: {latest} (current: v{APP_VERSION})",
+                ))
+                if download_url:
+                    reply = QtWidgets.QMessageBox.question(
+                        self,
+                        self.tx("Actualización disponible", "Update available"),
+                        self.tx(
+                            f"Hay una nueva versión disponible en GitHub: {latest}\n"
+                            f"Versión actual: v{APP_VERSION}\n\n"
+                            f"¿Deseas descargar e instalar esta actualización ahora?{notes_preview}",
+                            f"A new version is available on GitHub: {latest}\n"
+                            f"Current version: v{APP_VERSION}\n\n"
+                            f"Do you want to download and install this update now?{notes_preview}",
+                        ),
+                    )
+                    if reply == QtWidgets.QMessageBox.StandardButton.Yes:
+                        self._download_and_apply_update(info)
+                else:
+                    reply = QtWidgets.QMessageBox.question(
+                        self,
+                        self.tx("Actualización disponible", "Update available"),
+                        self.tx(
+                            f"Hay una nueva versión disponible en GitHub: {latest} (actual: v{APP_VERSION}), "
+                            f"pero no incluye un binario directo para tu plataforma.\n\n"
+                            f"¿Quieres abrir la página de Releases en el navegador?{notes_preview}",
+                            f"A new version is available on GitHub: {latest} (current: v{APP_VERSION}), "
+                            f"but no direct binary asset was found for your platform.\n\n"
+                            f"Open the Releases page in your browser?{notes_preview}",
+                        ),
+                    )
+                    if reply == QtWidgets.QMessageBox.StandardButton.Yes:
+                        QtGui.QDesktopServices.openUrl(QtCore.QUrl(html_url))
+                return
+
+            if not silent_if_up_to_date:
+                if info.get("no_releases"):
+                    msg = self.tx(
+                        f"Aún no hay Releases publicados en GitHub.\nVersión local actual: v{APP_VERSION}",
+                        f"No GitHub Releases have been published yet.\nCurrent local version: v{APP_VERSION}",
+                    )
+                else:
+                    latest = str(info.get("latest_version") or f"v{APP_VERSION}")
+                    msg = self.tx(
+                        f"Ya tienes la versión más reciente (v{APP_VERSION} · último release: {latest}).",
+                        f"You are already on the latest version (v{APP_VERSION} · latest release: {latest}).",
+                    )
+                QtWidgets.QMessageBox.information(
+                    self,
+                    self.tx("Sin actualizaciones", "Up to date"),
+                    msg,
+                )
+
+        def on_err(exc: Exception) -> None:
+            self._update_check_worker = None
+            err_text = str(exc)
+            if not silent_if_up_to_date:
+                self.settings_page.check_updates_btn.setEnabled(not self._mod_operation_active)
+                self.report_progress(0.0, self.tx("No se pudo verificar actualizaciones", "Update check failed"))
+                self.log_operation(self.tx(
+                    f"Error al buscar actualizaciones en GitHub: {err_text}",
+                    f"Failed to check GitHub for updates: {err_text}",
+                ), level="ERROR")
+                QtWidgets.QMessageBox.warning(
+                    self,
+                    self.tx("Error de actualización", "Update check failed"),
+                    self.tx(
+                        f"No se pudo consultar GitHub Releases:\n{err_text}",
+                        f"Could not query GitHub Releases:\n{err_text}",
+                    ),
+                )
+            else:
+                self.log_operation(self.tx(
+                    f"Aviso de actualización omitido (sin conexión o límite de API): {err_text}",
+                    f"Startup update check skipped (offline or API error): {err_text}",
+                ), level="WARN")
+
+        worker.finished_ok.connect(on_ok)
+        worker.failed_err.connect(on_err)
+        worker.start()
+
+    def _download_and_apply_update(self, info: dict) -> None:
+        download_url = str(info.get("download_url") or "").strip()
+        asset_name = str(info.get("asset_name") or "").strip()
+        latest = str(info.get("latest_version") or "").strip()
+        if not download_url:
+            return
+
+        def work(report):
+            return download_and_stage_update(
+                download_url,
+                asset_name,
+                self.manager_dir,
+                progress_cb=report,
+            )
+
+        def done(res: object) -> None:
+            data = res if isinstance(res, dict) else {}
+            mode = str(data.get("mode") or "")
+            staged_path = str(data.get("staged_path") or "")
+            self.log_operation(self.tx(
+                f"Actualización {latest} descargada ({mode}): {staged_path}",
+                f"Update {latest} downloaded ({mode}): {staged_path}",
+            ))
+            if mode in ("self_replace_win", "replaced_posix"):
+                reply = QtWidgets.QMessageBox.question(
+                    self,
+                    self.tx("Reiniciar para actualizar", "Restart to update"),
+                    self.tx(
+                        f"La versión {latest} está lista para aplicarse.\n\n"
+                        "¿Deseas cerrar y reiniciar Ocarina Remake Manager ahora?",
+                        f"Version {latest} is ready to install.\n\n"
+                        "Close and restart Ocarina Remake Manager now?",
+                    ),
+                )
+                if reply == QtWidgets.QMessageBox.StandardButton.Yes:
+                    if launch_staged_update(data):
+                        self.close()
+                return
+
+            reply = QtWidgets.QMessageBox.question(
+                self,
+                self.tx("Actualización descargada", "Update downloaded"),
+                self.tx(
+                    f"El paquete {asset_name} se descargó en:\n{staged_path}\n\n"
+                    "(Al ejecutarse desde código fuente Python no se reemplaza automáticamente.)\n\n"
+                    "¿Quieres abrir la carpeta de descarga?",
+                    f"Package {asset_name} was downloaded to:\n{staged_path}\n\n"
+                    "(When running from Python source, it is not replaced automatically.)\n\n"
+                    "Open the download folder?",
+                ),
+            )
+            if reply == QtWidgets.QMessageBox.StandardButton.Yes and staged_path:
+                self._open_folder_in_explorer(str(Path(staged_path).parent))
+
+        self._run_background_operation(
+            work,
+            status_text=self.tx(f"Descargando {latest}…", f"Downloading {latest}…"),
+            on_success=done,
+            error_title=self.tx("Error al descargar actualización", "Update download failed"),
         )
